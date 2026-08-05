@@ -24,7 +24,9 @@ maintenance-page/
 var MAINTENANCE = {
   start: '2026-08-06T08:00:00+08:00',   // ISO 8601，務必帶時區
   end: '2026-08-06T12:00:00+08:00',
-  siteUrl: 'https://www.furuke.com/'    // 維護結束後把使用者送回哪裡
+  siteUrl: 'https://www.furuke.com/',   // 維護結束後把使用者送回哪裡
+  probeUrl: 'https://www.furuke.com/img/logo/icon-512x512.png',  // 探測用圖檔
+  probeInterval: 30000                  // 探測間隔（毫秒，最少 5000）
 };
 ```
 
@@ -36,7 +38,26 @@ cd maintenance-page && cp index.html 404.html
 
 語言依瀏覽器 `navigator.language` 自動判斷（含 `zh` → 繁中，其餘 → 英文），
 使用者可用頁面下方的連結手動切換（記在 localStorage），也支援 `?lang=en`。
-倒數結束後會自動跳回 `siteUrl`。頁面只有淺色樣式，不跟隨系統深色模式。
+頁面只有淺色樣式，不跟隨系統深色模式。
+
+## 自動跳回正式站
+
+維護有可能提早結束，所以頁面每 `probeInterval`（預設 30 秒）探測一次正式站，
+**確認恢復了才** `location.replace(siteUrl)`，不受倒數計時影響。分頁從背景切回前景時
+會立刻補探一次（背景分頁的 timer 會被瀏覽器降頻）。
+
+不能每 30 秒直接 `location.replace(siteUrl)`：維護中 Cloudflare 會 302 把人導回這頁，
+等於每 30 秒重新載入一次維護頁（倒數歸零、捲動位置消失）。所以改成先探測：
+
+- 探測方式是載入 `probeUrl` 這張圖（帶 `?probe=<timestamp>` 避開快取），10 秒沒回應算失敗
+- 維護中，對 `www.furuke.com` 的請求會被 302 導到維護頁的 HTML，圖片解碼必定失敗 → 判定尚未恢復
+- **`probeUrl` 要挑「正式站有、這個 repo 沒有」的檔案**（目前用 `icon-512x512.png`；
+  `with-text.png`、`icon-192x192.png`、`favicon.ico`、`robots.txt` 這幾個維護頁也有，
+  萬一哪天 redirect 規則改成保留路徑就會誤判成已恢復，變成跳過去又被導回來的迴圈）
+- `probeUrl` 設成 `''` 就停用探測，退回舊行為：倒數結束後盲跳 `siteUrl`
+
+自己要停在這頁檢查外觀（例如維護前預覽、或 redirect 規則已經開了）就加 `?stay=1`
+（`?preview=1` 也可以），這樣不會被自動送回正式站。
 
 ## 部署到 GitHub Pages
 

@@ -3,6 +3,8 @@
   FURUKE 維護頁（GitHub Pages 靜態頁）
 
   · 維護時間改下方 <script> 開頭的 MAINTENANCE 設定即可，不需要改其他地方。
+  · 頁面每 30 秒探測正式站一次，恢復（含提早結束）就自動把使用者送回去；
+    要停在這頁檢查外觀就開 ?stay=1。
   · logo 以 base64 內嵌，因此 404.html 在任何深度路徑都能正常顯示。
   · 改完 index.html 記得同步：cp index.html 404.html
 -->
@@ -198,7 +200,12 @@
     start: '2026-08-06T08:00:00+08:00',
     end: '2026-08-06T12:00:00+08:00',
     // 維護結束後要把使用者送回哪裡
-    siteUrl: 'https://www.furuke.com/'
+    siteUrl: 'https://www.furuke.com/',
+    // 每 30 秒探測本站是否已恢復（維護提早結束時自動把使用者送回去）。
+    // 必須是「只有正式站有、這個維護頁沒有」的圖檔：維護中 Cloudflare 會把
+    // 探測導回本頁（HTML），圖片解碼一定失敗，就知道還沒恢復。設成 '' 可停用探測。
+    probeUrl: 'https://www.furuke.com/img/logo/icon-512x512.png',
+    probeInterval: 30000
   };
   // ================================
 
@@ -305,6 +312,59 @@
 
   function pad(n) { return n < 10 ? '0' + n : String(n); }
 
+  // ===== 每 30 秒探測本站，恢復了就自動送回去（維護可能提早結束）=====
+  // 直接每 30 秒 location.replace() 是不行的：維護中 Cloudflare 會 302 把人導回這頁，
+  // 等於每 30 秒重新載入一次維護頁。所以先用圖片探測，確認正式站真的回來了才跳。
+  var PROBE_INTERVAL = Math.max(5000, MAINTENANCE.probeInterval || 30000);
+  var PROBE_TIMEOUT = 10000;
+  // ?stay=1（或 ?preview=1）可停用自動跳轉，方便維護前自己開來檢查頁面。
+  var forceStay = /(^|&)(stay|preview)=1(&|$)/.test(window.location.search.slice(1));
+  var probeEnabled = !!MAINTENANCE.probeUrl && !forceStay;
+  var probeTimer = null;
+  var probeBusy = false;
+
+  function probeOnce(done) {
+    var img = new Image();
+    var settled = false;
+    var timer = null;
+
+    function finish(ok) {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      img.onload = img.onerror = null;
+      done(ok);
+    }
+
+    img.onload = function () { finish(img.naturalWidth > 0); };
+    // 維護中會被導到本頁的 HTML／404，圖片必定解碼失敗 → 還沒恢復。
+    img.onerror = function () { finish(false); };
+    timer = window.setTimeout(function () { finish(false); }, PROBE_TIMEOUT);
+
+    var url = MAINTENANCE.probeUrl;
+    img.src = url + (url.indexOf('?') === -1 ? '?' : '&') + 'probe=' + Date.now();
+  }
+
+  function scheduleProbe(delay) {
+    if (!probeEnabled) return;
+    window.clearTimeout(probeTimer);
+    probeTimer = window.setTimeout(probe, delay);
+  }
+
+  function probe() {
+    if (!probeEnabled || probeBusy) return;
+    probeBusy = true;
+    probeOnce(function (ok) {
+      probeBusy = false;
+      if (ok) {
+        window.location.replace(MAINTENANCE.siteUrl);
+        return;
+      }
+      scheduleProbe(PROBE_INTERVAL);
+    });
+  }
+
+
   function tick() {
     if (!hasWindow) return;
 
@@ -317,8 +377,11 @@
 
     if (left <= 0) {
       value.textContent = DONE_TEXT[current];
-      // 維護結束後 origin 可能還要一點時間，持續重試直到有回應。
-      window.setTimeout(function () { window.location.replace(MAINTENANCE.siteUrl); }, 30000);
+      if (!probeEnabled) {
+        // 沒有探測時只能盲跳，等一下讓 origin 有時間起來。
+        window.setTimeout(function () { window.location.replace(MAINTENANCE.siteUrl); }, PROBE_INTERVAL);
+      }
+      // 有探測的話交給 probe()，恢復了才跳，不會在還沒好的時候一直重新載入。
       return;
     }
 
@@ -352,7 +415,15 @@
     link.setAttribute('href', MAINTENANCE.siteUrl);
   });
 
+  // 分頁切到背景時 setTimeout 會被瀏覽器降頻，切回來就立刻補探測一次。
+  if (probeEnabled) {
+    document.addEventListener('visibilitychange', function () {
+      if (!document.hidden) scheduleProbe(0);
+    });
+  }
+
   tick();
+  scheduleProbe(PROBE_INTERVAL);
 })();
 </script>
 </body>
